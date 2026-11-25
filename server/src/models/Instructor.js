@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
 
 // Instructor Portal account.
 //
@@ -22,5 +23,16 @@ const instructorSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Hash the password before saving. Only re-hash when it actually changed, so
+// saving an instructor for another reason doesn't hash the existing hash.
+instructorSchema.pre('save', async function () {
+  if (!this.isModified('password')) return;
+  this.password = await bcrypt.hash(this.password, 10);
+});
+
+instructorSchema.methods.comparePassword = async function (password) {
+  return bcrypt.compare(password, this.password);
+};
 
 export const Instructor = mongoose.model('Instructor', instructorSchema);

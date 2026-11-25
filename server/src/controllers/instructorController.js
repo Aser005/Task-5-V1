@@ -1,4 +1,12 @@
+import Joi from 'joi';
 import { Instructor } from '../models/Instructor.js';
+
+// Both fields must be plain strings. This rejects operator objects such as
+// {"$ne": null} or {"$regex": "^S"} before they can reach MongoDB.
+const instructorLoginSchema = Joi.object({
+  username: Joi.string().required(),
+  password: Joi.string().required()
+});
 
 // =============================================================================
 //  INSTRUCTOR PORTAL CONTROLLER  —  ⚠️ INTENTIONALLY VULNERABLE (security lab)
@@ -32,9 +40,9 @@ function publicProfile(doc) {
 // POST /api/instructors/login
 export async function loginInstructor(req, res, next) {
   try {
-    const { username, password } = req.body;
-    if (username === undefined || password === undefined) {
-      return res.status(400).json({ message: 'username and password are required' });
+    const { value, error } = instructorLoginSchema.validate(req.body);
+    if (error) {
+      return res.status(400).json({ message: error.message });
     }
 
     // ⚠️ VULNERABLE (NoSQL injection): `username` and `password` are placed
@@ -43,9 +51,13 @@ export async function loginInstructor(req, res, next) {
     // filter that matches any account (authentication bypass). With
     // {"password":{"$regex":"^S"}} the success/failure response becomes an
     // oracle for extracting the stored password one character at a time.
-    const instructor = await Instructor.findOne({ username, password });
 
-    if (!instructor) {
+    // Look up by username only; the password is never part of the query.
+    const instructor = await Instructor.findOne({ username: value.username });
+
+    // Same response for "no such user" and "wrong password", so the response
+    // reveals nothing about which one failed.
+    if (!instructor || !(await instructor.comparePassword(value.password))) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
     return res.json({ instructor: publicProfile(instructor) });
@@ -79,10 +91,36 @@ export async function searchInstructors(req, res, next) {
     //   ?role[$ne]=instructor           -> operator injection, leaks superadmin
     //   ?username[$regex]=^admin        -> regex enumeration
     //   ?$where=this.password.length>10 -> server-side JavaScript execution
-    const filter = req.query;
-    const instructors = await Instructor.find(filter).lean();
+
+    // Build the filter ourselves from an allowlist of fields. A value is used
+    // only if it is a plain string, so operator objects like {"$ne": ...} and
+    // top-level keys like $where are silently ignored instead of executed.
+    const { name, department, role } = req.query;
+    const filter = {};
+    if (typeof name === 'string' && name.trim() !== '') {
+      // Case-insensitive "contains" match. The input is escaped so regex
+      // characters in it are treated as literal text, not as a pattern.
+      filter.name = { $regex: escapeRegex(name.trim()), $options: 'i' };
+    }
+    if (typeof department === 'string' && department.trim() !== '') {
+      filter.department = department.trim();
+    }
+    if (typeof role === 'string' && role.trim() !== '') {
+      filter.role = role.trim();
+    }
+
+    // Return only public fields, never password / apiKey / private contact info.
+    const instructors = await Instructor.find(filter)
+      .select('name department role')
+      .sort({ name: 1 })
+      .lean();
     res.json({ count: instructors.length, instructors });
   } catch (err) {
     next(err);
   }
+}
+
+// Escape characters that have special meaning in a regular expression.
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -31,7 +31,11 @@ export async function getReview(req, res, next) {
 export async function getCourseSummary(req, res, next) {
   try {
     const { courseCode } = req.query;
-    if (!courseCode) return res.status(400).json({ message: 'courseCode query parameter is required' });
+    // Must be a non-empty string; an object like ?courseCode[$ne]=x would
+    // otherwise crash on toUpperCase() below with a 500.
+    if (typeof courseCode !== 'string' || courseCode.trim() === '') {
+      return res.status(400).json({ message: 'courseCode query parameter is required' });
+    }
 
     const [summary] = await Review.aggregate([
       { $match: { courseCode: courseCode.toUpperCase() } },
